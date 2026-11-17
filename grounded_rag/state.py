@@ -7,7 +7,8 @@ Verdict = Literal["grounded", "ungrounded", "fabricated"]
 class Chunk(TypedDict):
     id: str        # e.g. "kb-07"; answers cite chunks as [kb-07]
     text: str
-    score: float   # cosine similarity to the search query
+    score: float   # cosine similarity to the search query (1.0 for exact matches)
+    match: Literal["exact", "vector"]
 
 
 class RAGState(TypedDict):

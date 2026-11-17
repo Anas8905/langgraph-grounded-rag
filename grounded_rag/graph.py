@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Checkpointer, RetryPolicy
 
 from .state import RAGState
-from .verify import verify_answer
+from .verify import IDENTIFIER, appears_verbatim, verify_answer
 
 TOP_K = 3
 MAX_ATTEMPTS = 2
@@ -34,7 +34,8 @@ ANSWER_PROMPT = """You answer questions about the Acme Pay API using only the co
 
 REFORMULATE_PROMPT = """A search over the Acme Pay error runbook returned passages that did not
 support an answer. Write one new search query that will find the passage that does.
-- Keep exact identifiers from the question (error codes, versions).
+- Keep the identifiers from the question, written in the exact format the passages use
+  (e.g. E-4012, not 4012): identifiers in that format are matched verbatim.
 - Drop wording that pulled in the wrong passages; the verifier findings say what was missing.
 Return only the query text."""
 
@@ -58,13 +59,23 @@ def route_after_verify(state: RAGState) -> str:
     return "reformulate" if state["attempts"] < MAX_ATTEMPTS else "abstain"
 
 
-def build_graph(llm: BaseChatModel, store: VectorStore, checkpointer: Checkpointer = None):
+def build_graph(llm: BaseChatModel, store: VectorStore, checkpointer: Checkpointer = None,
+                corpus: list[Document] | None = None):
     """Compile the graph. Always checkpointed: SQLite from the CLI, in-memory by default."""
+    corpus = load_corpus() if corpus is None else corpus
+
     def retrieve(state: RAGState) -> dict:
+        # Hybrid. Embeddings rank E-4021's chunk 4th even for the query "E-4021", so chunks that
+        # contain an identifier from the search verbatim go first; vector results fill the rest.
         search = state["reformulated_query"] or state["query"]
-        hits = store.similarity_search_with_score(search, k=TOP_K)
-        return {"retrieved_chunks": [{"id": doc.metadata["id"], "text": doc.page_content,
-                                      "score": round(float(score), 3)} for doc, score in hits]}
+        wanted = IDENTIFIER.findall(search)
+        chunks = [{"id": d.metadata["id"], "text": d.page_content, "score": 1.0, "match": "exact"}
+                  for d in corpus if any(appears_verbatim(i, d.page_content) for i in wanted)]
+        for doc, score in store.similarity_search_with_score(search, k=TOP_K):
+            if doc.metadata["id"] not in {c["id"] for c in chunks}:
+                chunks.append({"id": doc.metadata["id"], "text": doc.page_content,
+                               "score": round(float(score), 3), "match": "vector"})
+        return {"retrieved_chunks": chunks[:TOP_K]}
 
     def generate(state: RAGState) -> dict:
         context = "\n".join(f"[{c['id']}] {c['text']}" for c in state["retrieved_chunks"])

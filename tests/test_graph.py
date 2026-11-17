@@ -84,22 +84,29 @@ def test_grounded_first_try(store):
 def test_grounded_after_reformulation(store):
     llm = ScriptedLLM(
         # first draft borrows the fix for the adjacent code E-4012: the dangerous failure
-        "To fix E-4021, change the invoice currency and re-run the billing sync [kb-01].",
-        "E-4021 ledger export duplicate journal reference",
-        "E-4021 means the ledger export reused a journal reference [kb-02]. Void the duplicate "
-        "entry and start a manual export; one export is capped at 5,000 journal lines [kb-02].",
+        "To fix error 4021, change the invoice currency and re-run the billing sync [kb-01].",
+        "E-4021 billing sync error",   # code rewritten in the format the returned passages use
+        "Error 4021 (E-4021) means the ledger export reused a journal reference [kb-02]. Void the "
+        "duplicate entry and start a manual export; one export is capped at 5,000 journal lines [kb-02].",
     )
     counting = CountingStore(store)
-    path, final = run(build_graph(llm, counting), "Our billing sync keeps failing with E-4021. How do we fix it?")
+    path, final = run(build_graph(llm, counting), "Our billing sync keeps failing with error 4021. How do we fix it?")
     assert path == ["retrieve", "generate", "verify", "reformulate", "retrieve", "generate", "verify"]
     assert final["verdict"] == "grounded" and final["attempts"] == 1
-    assert counting.searches[1] == "E-4021 ledger export duplicate journal reference"
-    assert "kb-02" in {c["id"] for c in final["retrieved_chunks"]}
+    assert counting.searches[1] == "E-4021 billing sync error"
+    assert final["retrieved_chunks"][0] == {**final["retrieved_chunks"][0], "id": "kb-02", "match": "exact"}
 
 
-def test_first_pass_misses_the_adjacent_identifier(store):
+def test_vector_search_alone_misses_the_adjacent_identifier(store):
     hits = store.similarity_search_with_score("Our billing sync keeps failing with E-4021. How do we fix it?", k=3)
     assert {d.metadata["id"] for d, _ in hits} == {"kb-01", "kb-03", "kb-04"}  # E-4012, E-4102, E-4120
+
+
+def test_exact_identifier_is_pinned_ahead_of_vector_results(store):
+    llm = ScriptedLLM("E-4021 means the ledger export reused a journal reference [kb-02].")
+    _, final = run(build_graph(llm, store), "Our billing sync keeps failing with E-4021. How do we fix it?")
+    assert [(c["id"], c["match"]) for c in final["retrieved_chunks"]] == \
+           [("kb-02", "exact"), ("kb-01", "vector"), ("kb-03", "vector")]
 
 
 def test_abstains_on_identifier_missing_from_corpus(store):
@@ -127,7 +134,8 @@ def test_route_after_verify(verdict, attempts, expected):
 # ── deterministic verifier ────────────────────────────────────────────────────────────
 
 CHUNKS = [{"id": c.metadata["id"], "text": c.page_content, "score": 1.0} for c in load_corpus()]
-KB01, KB04, KB07, KB08 = (next(c for c in CHUNKS if c["id"] == i) for i in ("kb-01", "kb-04", "kb-07", "kb-08"))
+KB01, KB02, KB04, KB07, KB08 = (next(c for c in CHUNKS if c["id"] == i)
+                                for i in ("kb-01", "kb-02", "kb-04", "kb-07", "kb-08"))
 
 
 @pytest.mark.parametrize("answer,chunks,verdict,claim", [
@@ -140,6 +148,9 @@ KB01, KB04, KB07, KB08 = (next(c for c in CHUNKS if c["id"] == i) for i in ("kb-
     ("API v2.4 rejects events older than 300 seconds [kb-08].", [KB08], "grounded", None),
     ("API v2.5 rejects events older than 300 seconds [kb-08].", [KB08], "ungrounded", "identifier v2.5"),
     ("Steps:\n1. Wait up to 72 hours [kb-07].\n2. Do not refund twice [kb-07].", [KB07], "grounded", None),
+    ("Error 4021 (E-4021) is a ledger export error [kb-02].", [KB02], "grounded", None),     # number inside a code
+    ("Error 4021 is a billing sync error [kb-01].", [KB01], "ungrounded", "number 4021"),  # not inside E-4012
+    ("E-402 is a ledger export error [kb-02].", [KB02], "ungrounded", "identifier E-402"),   # not inside E-4021
 ])
 def test_verify_answer(answer, chunks, verdict, claim):
     got_verdict, claims = verify_answer(answer, chunks)
@@ -175,6 +186,7 @@ def test_rejected_drafts_stay_inspectable_in_checkpoint_history(store):
     llm = ScriptedLLM(not_covered, "E-4022", not_covered, "E-4022 refund", not_covered)
     graph = build_graph(llm, store, saver)
     run(graph, "How do I resolve error E-4022?", thread="h1")
-    drafts = {s.values.get("draft_answer") for s in graph.get_state_history({"configurable": {"thread_id": "h1"}})}
+    drafts = {s.values["draft_answer"] for s in graph.get_state_history({"configurable": {"thread_id": "h1"}})
+              if s.values}  # the first snapshot (before START) is empty
     assert not_covered in drafts
     assert any(d.startswith("Not supported by available sources.") for d in drafts)

@@ -21,22 +21,22 @@ from grounded_rag.state import initial_state
 
 EXAMPLES = [
     "What does error E-4210 mean, and should I issue the refund again?",  # grounded first try
-    "Our billing sync keeps failing with E-4021. How do we fix it?",       # grounded after reformulation
+    "Our billing sync keeps failing with error 4021. How do we fix it?",   # grounded after reformulation
     "How do I resolve error E-4022 when issuing a refund?",                # E-4022 does not exist: abstain
 ]
 
 
 def label(chunk: dict) -> str:
-    """'kb-02 E-4021' for error chunks, 'kb-09 Rate limits' for the rest."""
+    """'kb-02 E-4021 (exact)' or 'kb-09 Rate limits (0.62)'."""
     title = re.split(r" · |\. ", chunk["text"], maxsplit=1)[0]
-    return f"{chunk['id']} {title}"
+    return f"{chunk['id']} {title} ({'exact' if chunk['match'] == 'exact' else format(chunk['score'], '.2f')})"
 
 
 def show(node: str, update: dict) -> None:
     print(f"\n── {node} {'─' * (64 - len(node))}")
     for key, value in update.items():
         if key == "retrieved_chunks":
-            value = "  |  ".join(f"{label(c)} ({c['score']:.2f})" for c in value)
+            value = "  |  ".join(label(c) for c in value)
         elif key == "unsupported_claims":
             value = "; ".join(value) or "none"
         elif key == "verdict":

@@ -1,14 +1,10 @@
-"""Deterministic grounding check. No LLM call, on purpose.
-
-Rules:
+"""Deterministic grounding check. No LLM call, on purpose. Rules:
   * every citation [kb-NN] must point at a chunk that was actually retrieved -> else "fabricated"
   * every identifier (E-4021, v2.4) and number (72, 5,000, 02:00) in the answer must appear
     verbatim in the retrieved text -> else "ungrounded"
   * the answer must cite at least one retrieved chunk -> else "ungrounded"
-
-Matching is boundary-aware: "E-402" does not match inside "E-4021", and "15" does not match
-inside "150". With adjacent identifiers in the corpus, substring matching would let exactly
-the wrong answers through.
+Matching is boundary-aware: "E-402" does not match inside "E-4021", "15" not inside "150".
+With adjacent identifiers in the corpus, substring matching would pass exactly the wrong answers.
 """
 import re
 
@@ -21,7 +17,9 @@ LIST_MARKER = re.compile(r"(?m)^\s*(?:\d+[.)]|[-*•])\s+")
 
 
 def appears_verbatim(token: str, text: str) -> bool:
-    return re.search(rf"(?<![\w.-]){re.escape(token)}(?![\w-]|[.,:]\d)", text) is not None
+    # a bare number may sit inside a code ("4021" in "E-4021"); an identifier may not ("E-402")
+    before = r"(?<![\w.])" if token[0].isdigit() else r"(?<![\w.-])"
+    return re.search(rf"{before}{re.escape(token)}(?![\w-]|[.,:]\d)", text) is not None
 
 
 def verify_answer(answer: str, chunks: list[Chunk]) -> tuple[Verdict, list[str]]:
